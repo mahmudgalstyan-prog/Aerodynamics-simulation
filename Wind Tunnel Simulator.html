@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wind Tunnel Simulator</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f4f5f7;--card:#fff;--ink:#16191f;--mute:#5c6470;--line:#d9dde3;--acc:#2563eb}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1218;--card:#181c24;--ink:#e8ebf0;--mute:#98a1b0;--line:#2b313c;--acc:#5b8cff}}
+:root[data-theme="dark"]{--bg:#0f1218;--card:#181c24;--ink:#e8ebf0;--mute:#98a1b0;--line:#2b313c;--acc:#5b8cff}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:0 0 2px}
+p.sub{margin:0 0 12px;color:var(--mute);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
+canvas{display:block;width:100%;height:auto;border-radius:8px;background:#0b0e14;touch-action:none;cursor:crosshair}
+.stats{display:flex;flex-wrap:wrap;gap:8px 18px;margin:10px 2px 0;font-size:13px;color:var(--mute)}
+.stats b{color:var(--ink);font-variant-numeric:tabular-nums}
+.ctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:12px}
+label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mute)}
+label span b{color:var(--ink);font-weight:600}
+select,input[type=range],button{width:100%;font:inherit}
+select,button{padding:7px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+button{cursor:pointer}button.p{background:var(--acc);border-color:var(--acc);color:#fff}
+.row{display:flex;gap:8px;align-items:end}
+.chk{flex-direction:row;align-items:center;gap:8px;color:var(--ink)}
+.chk input{width:auto}
+.hint{font-size:12px;color:var(--mute);margin:10px 2px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>Wind Tunnel Simulator</h1>
+<p class="sub">2D airflow from left to right, solved live with the lattice Boltzmann method.</p>
+<div class="card">
+<canvas id="cv" width="960" height="400"></canvas>
+<div id="leg" style="margin-top:10px"></div>
+<div class="stats">
+<span>Sim Re <b id="re">-</b></span><span>Real-air Re <b id="rr">-</b></span><span>Mach <b id="ma">-</b></span>
+<span>Drag coeff. <b id="cd">-</b></span>
+<span>Lift coeff. <b id="cl">-</b></span>
+<span>L/D <b id="ld">-</b></span>
+<span>Drag <b id="fd">-</b> N/m</span><span>Lift <b id="fl">-</b> N/m</span>
+<span>Under cursor: <b id="pr">move over the tunnel</b></span>
+</div>
+<div class="ctl">
+<label>Shape
+<select id="shape">
+<option value="airfoil">Airfoil (NACA 0012)</option>
+<option value="cyl">Cylinder</option>
+<option value="plate">Flat plate</option>
+<option value="sq">Square</option>
+<option value="none">Empty tunnel</option>
+</select></label>
+<label><span>Size <b id="vsz"></b></span><input id="size" type="range" min="12" max="48" value="30"></label>
+<label><span>Angle of attack <b id="vaoa"></b>°</span><input id="aoa" type="range" min="-25" max="25" value="8"></label>
+<label><span>Airspeed <b id="vu"></b></span><input id="u0" type="range" min="5" max="100" value="50"></label>
+<label><span>Altitude <b id="valt"></b></span><input id="alt" type="range" min="0" max="11000" step="500" value="0"></label>
+<label><span>Simulated viscosity <b id="vnu"></b></span><input id="nu" type="range" min="5" max="60" value="20"></label>
+<label>Colour by
+<select id="vis">
+<option value="speed">Speed</option>
+<option value="vort">Vorticity (swirl)</option>
+<option value="pres">Pressure (Pa)</option>
+<option value="temp">Temperature (°C)</option>
+</select></label>
+<label class="chk"><input id="part" type="checkbox" checked> Smoke particles</label>
+<div class="row">
+<button id="pp" class="p">Pause</button>
+<button id="rs">Reset flow</button>
+</div>
+</div>
+<p class="hint">Scale: 1 cell = 1 cm (tunnel 2.4 m × 1.0 m), standard atmosphere (ISA) for the chosen altitude. Pressure comes from the flow solution scaled by the real air density and airspeed (the stagnation point reads about ½ρU²). Temperature uses steady adiabatic energy conservation, T + v²/2cp = constant, so air warms where it slows and cools where it speeds up. This ignores viscous heating, heat conduction and compressibility (fine below about Mach 0.3). The simulated Reynolds number is far below real-air Re, so the flow is smoother and more laminar than a real full-size wing.</p>
+<p class="hint">Click and drag on the tunnel to draw your own obstacles. Hold Shift (or use right-click) to erase.</p>
+</div>
+</main>
+<script>
+(function(){
+var W=240,H=100,N=W*H,S=4;
+var cx=[0,1,0,-1,0,1,-1,-1,1],cy=[0,0,1,0,-1,1,1,-1,-1],wt=[4/9,1/9,1/9,1/9,1/9,1/36,1/36,1/36,1/36],opp=[0,3,4,1,2,7,8,5,6];
+var f=new Float32Array(9*N),g=new Float32Array(9*N),solid=new Uint8Array(N);
+var rho=new Float32Array(N),ux=new Float32Array(N),uy=new Float32Array(N);
+var cv=document.getElementById("cv"),ctx=cv.getContext("2d");
+var off=document.createElement("canvas");off.width=W;off.height=H;
+var octx=off.getContext("2d"),img=octx.createImageData(W,H);
+var $=function(i){return document.getElementById(i)};
+var u0=0.09,nu=0.02,U=50,alt=0,Tinf=288.15,pinf=101325,rhoA=1.225,mu=1.8e-5,aS=340,kk=555,qd=1531,om=1,Fx=0,Fy=0,cd=0,cl=0,L=30,running=true;
+var ov=document.createElement("canvas");ov.width=W*S;ov.height=H*S;
+var ovx=ov.getContext("2d"),oimg=ovx.createImageData(W*S,H*S),ovDirty=true;
+var NP=1400,px=new Float32Array(NP),py=new Float32Array(NP);
+
+function eq(i,r,x,y){var cu=3*(cx[i]*x+cy[i]*y);return wt[i]*r*(1+cu+0.5*cu*cu-1.5*(x*x+y*y))}
+function resetFlow(){
+ for(var i=0;i<9;i++){var e=eq(i,1,u0,0);for(var k=0;k<N;k++)f[i*N+k]=e}
+ cd=0;cl=0;
+ for(var p=0;p<NP;p++)spawn(p,true);
+}
+function spawn(p,any){px[p]=any?Math.random()*W:0;py[p]=Math.random()*H}
+function measure(){
+ var a=H,b=0;
+ for(var y=0;y<H;y++)for(var x=0;x<W;x++)if(solid[y*W+x]){if(y<a)a=y;if(y>b)b=y}
+ L=b>=a?Math.max(4,b-a+1):30;ovDirty=true;
+}
+function build(){
+ solid.fill(0);
+ var t=$("shape").value,sz=+$("size").value,x0=W*0.25,y0=H/2;
+ var a=+$("aoa").value*Math.PI/180,ca=Math.cos(a),sa=Math.sin(a),c=sz*2;
+ for(var y=0;y<H;y++)for(var x=0;x<W;x++){
+  var dx=x-x0,dy=y-y0,s=0;
+  if(t==="cyl")s=dx*dx+dy*dy<=sz*sz/4;
+  else if(t==="sq")s=Math.abs(dx)<=sz/2&&Math.abs(dy)<=sz/2;
+  else if(t==="plate"){var xr=dx*ca+dy*sa,yr=-dx*sa+dy*ca;s=Math.abs(xr)<=1.5&&Math.abs(yr)<=sz*0.75}
+  else if(t==="airfoil"){
+   var xb=dx*ca+dy*sa+0.25*c,yb=-dx*sa+dy*ca;
+   if(xb>=0&&xb<=c){var q=xb/c,yt=5*0.12*c*(0.2969*Math.sqrt(q)-0.126*q-0.3516*q*q+0.2843*q*q*q-0.1015*q*q*q*q);s=Math.abs(yb)<=yt}
+  }
+  if(s)solid[y*W+x]=1;
+ }
+ measure();
+ fixCells();
+}
+function fixCells(){
+ for(var k=0;k<N;k++)if(solid[k]){for(var i=0;i<9;i++)f[i*N+k]=wt[i]}
+}
+function params(){
+ u0=0.09;U=+$("u0").value;alt=+$("alt").value;nu=+$("nu").value/1000;om=1/(3*nu+0.5);
+ $("vsz").textContent=$("size").value;$("vaoa").textContent=$("aoa").value;
+ $("vu").textContent=U+" m/s";phys();$("vnu").textContent=nu.toFixed(3);
+ $("aoa").parentNode.style.opacity=($("shape").value==="airfoil"||$("shape").value==="plate")?1:0.4;
+}
+function step(){
+ var i,k,x,y,r,vx,vy,u2,cu,fe;
+ for(k=0;k<N;k++){
+  if(solid[k]){rho[k]=1;ux[k]=0;uy[k]=0;continue}
+  var f0=f[k],f1=f[N+k],f2=f[2*N+k],f3=f[3*N+k],f4=f[4*N+k],f5=f[5*N+k],f6=f[6*N+k],f7=f[7*N+k],f8=f[8*N+k];
+  r=f0+f1+f2+f3+f4+f5+f6+f7+f8;
+  vx=(f1-f3+f5-f6-f7+f8)/r;vy=(f2-f4+f5+f6-f7-f8)/r;
+  rho[k]=r;ux[k]=vx;uy[k]=vy;u2=vx*vx+vy*vy;
+  for(i=0;i<9;i++){
+   cu=3*(cx[i]*vx+cy[i]*vy);fe=wt[i]*r*(1+cu+0.5*cu*cu-1.5*u2);
+   f[i*N+k]+=om*(fe-f[i*N+k]);
+  }
+ }
+ var fx=0,fy=0;
+ for(y=0;y<H;y++)for(x=0;x<W;x++){
+  k=y*W+x;if(solid[k])continue;
+  for(i=0;i<9;i++){
+   var nx=x+cx[i],ny=y+cy[i];
+   if(nx<0||nx>=W||ny<0||ny>=H)continue;
+   var t=ny*W+nx,v=f[i*N+k];
+   if(solid[t]){g[opp[i]*N+k]=v;fx+=2*v*cx[i];fy+=2*v*cy[i]}
+   else g[i*N+t]=v;
+  }
+ }
+ for(y=0;y<H;y++)for(i=0;i<9;i++){
+  var e=eq(i,1,u0,0);
+  g[i*N+y*W]=e;
+  g[i*N+y*W+W-1]=g[i*N+y*W+W-2];
+ }
+ for(x=0;x<W;x++)for(i=0;i<9;i++){var e2=eq(i,1,u0,0);g[i*N+x]=e2;g[i*N+(H-1)*W+x]=e2}
+ var tmp=f;f=g;g=tmp;
+ var q=0.99;cd=cd*q+(1-q)*fx/(0.5*u0*u0*L);cl=cl*q+(1-q)*(-fy)/(0.5*u0*u0*L);
+}
+var stops=[[10,20,60],[30,90,200],[80,200,220],[250,230,100],[230,60,50]];
+function ramp(t){
+ t=Math.max(0,Math.min(0.9999,t))*(stops.length-1);var i=t|0,m=t-i,a=stops[i],b=stops[i+1];
+ return [a[0]+(b[0]-a[0])*m,a[1]+(b[1]-a[1])*m,a[2]+(b[2]-a[2])*m];
+}
+function diverge(v){
+ v=Math.max(-1,Math.min(1,v));var m=Math.abs(v);
+ return v<0?[18+(60-18)*m*0+ (1-m)*0+ m*30,26+m*100,40+m*215]:[18+m*225,26+m*(70-26),40+m*(40-40)];
+}
+function phys(){
+ Tinf=288.15-0.0065*alt;pinf=101325*Math.pow(Tinf/288.15,5.2559);rhoA=pinf/(287.05*Tinf);
+ mu=1.458e-6*Math.pow(Tinf,1.5)/(Tinf+110.4);aS=Math.sqrt(1.4*287.05*Tinf);kk=U/u0;qd=0.5*rhoA*U*U;
+ $("valt").textContent=alt+" m ("+(Tinf-273.15).toFixed(0)+" °C, "+(pinf/1000).toFixed(1)+" kPa)";
+ legend();
+}
+function legend(){
+ var m=$("vis").value,g,a,b,c;
+ if(m==="speed"){g=stops.map(function(s){return "rgb("+s.join(",")+")"}).join(",");a="0";b=(0.85*U).toFixed(0);c=(1.7*U).toFixed(0)+" m/s"}
+ else{
+  g="rgb(48,126,255),rgb(18,26,40),rgb(243,70,40)";
+  if(m==="pres"){var r=1.5*qd;a="-"+r.toFixed(0);b="0";c="+"+r.toFixed(0)+" Pa vs ambient"}
+  else if(m==="temp"){var t=1.2*U*U/2010;a="-"+t.toFixed(1);b="0";c="+"+t.toFixed(1)+" K vs ambient"}
+  else{a="spin one way";b="0";c="the other way"}
+ }
+ $("leg").innerHTML='<div style="height:10px;border-radius:5px;background:linear-gradient(90deg,'+g+')"></div><div style="display:flex;justify-content:space-between;font-size:12px;color:var(--mute);margin-top:3px"><span>'+a+'</span><span>'+b+'</span><span>'+c+'</span></div>';
+}
+function probe(e){
+ var r=cv.getBoundingClientRect(),x=Math.floor((e.clientX-r.left)/r.width*W),y=Math.floor((e.clientY-r.top)/r.height*H);
+ if(x<0||x>=W||y<0||y>=H)return;
+ var k=y*W+x;
+ if(solid[k]){$("pr").textContent="solid surface";return}
+ var sp=Math.sqrt(ux[k]*ux[k]+uy[k]*uy[k])*kk,dp=(rho[k]-1)/3*rhoA*kk*kk,T=Tinf+(U*U-sp*sp)/2010-273.15;
+ $("pr").textContent=sp.toFixed(1)+" m/s, "+((pinf+dp)/1000).toFixed(2)+" kPa ("+(dp>=0?"+":"")+dp.toFixed(0)+" Pa), "+T.toFixed(2)+" °C";
+}
+function buildOverlay(){
+ var sm=new Float32Array(N),x,y,dx,dy;
+ for(y=0;y<H;y++)for(x=0;x<W;x++){
+  var s=0,n=0;
+  for(dy=-1;dy<=1;dy++)for(dx=-1;dx<=1;dx++){var xx=x+dx,yy=y+dy;if(xx<0||xx>=W||yy<0||yy>=H)continue;s+=solid[yy*W+xx];n++}
+  sm[y*W+x]=s/n;
+ }
+ var d=oimg.data,X,Y,WS=W*S;
+ for(Y=0;Y<H*S;Y++){
+  var gy=(Y+0.5)/S-0.5,y0=Math.max(0,Math.min(H-2,Math.floor(gy))),fy=Math.max(0,Math.min(1,gy-y0));
+  for(X=0;X<WS;X++){
+   var gx=(X+0.5)/S-0.5,x0=Math.max(0,Math.min(W-2,Math.floor(gx))),fx=Math.max(0,Math.min(1,gx-x0)),k=y0*W+x0;
+   var v=(sm[k]*(1-fx)+sm[k+1]*fx)*(1-fy)+(sm[k+W]*(1-fx)+sm[k+W+1]*fx)*fy;
+   var t=(v-0.38)/0.24;t=t<0?0:t>1?1:t;t=t*t*(3-2*t);
+   var o=(Y*WS+X)*4;d[o]=150;d[o+1]=156;d[o+2]=166;d[o+3]=t*255;
+  }
+ }
+ ovx.putImageData(oimg,0,0);ovDirty=false;
+}
+function render(){
+ var mode=$("vis").value,d=img.data,k,c;
+ for(var y=0;y<H;y++)for(var x=0;x<W;x++){
+  k=y*W+x;
+  if(solid[k]){c=[150,156,166]}
+  else if(mode==="speed"){c=ramp(Math.sqrt(ux[k]*ux[k]+uy[k]*uy[k])/(1.7*u0))}
+  else if(mode==="vort"){
+   var xl=x>0?k-1:k,xr=x<W-1?k+1:k,yu=y>0?k-W:k,yd=y<H-1?k+W:k;
+   var w=(uy[xr]-uy[xl])-(ux[yd]-ux[yu]);c=diverge(w/(0.35*u0))
+  }else if(mode==="pres"){c=diverge(2*(rho[k]-1)/(3*u0*u0)/1.5)}
+  else{var sp=Math.sqrt(ux[k]*ux[k]+uy[k]*uy[k])*kk;c=diverge((U*U-sp*sp)/(1.2*U*U))}
+  var o=k*4;d[o]=c[0];d[o+1]=c[1];d[o+2]=c[2];d[o+3]=255;
+ }
+ octx.putImageData(img,0,0);
+ ctx.imageSmoothingEnabled=true;ctx.drawImage(off,0,0,W*S,H*S);
+ if(ovDirty)buildOverlay();
+ ctx.drawImage(ov,0,0);
+ if($("part").checked){
+  ctx.fillStyle="rgba(255,255,255,0.75)";
+  for(var p=0;p<NP;p++){
+   var ix=px[p]|0,iy=py[p]|0;
+   if(ix<0||ix>=W||iy<0||iy>=H||solid[iy*W+ix]||Math.random()<0.004){spawn(p,false);continue}
+   var j=iy*W+ix;px[p]+=ux[j]*8;py[p]+=uy[j]*8;
+   ctx.fillRect(px[p]*S,py[p]*S,2,2);
+  }
+ }
+ var re=u0*L/nu;
+ $("re").textContent=Math.round(re);
+ $("cd").textContent=cd.toFixed(2);$("cl").textContent=cl.toFixed(2);
+ $("ld").textContent=Math.abs(cd)>0.02?(cl/cd).toFixed(1):"-";
+ var Lm=L*0.01;$("rr").textContent=(rhoA*U*Lm/mu).toExponential(1);$("ma").textContent=(U/aS).toFixed(2);
+ $("fd").textContent=(cd*qd*Lm).toFixed(1);$("fl").textContent=(cl*qd*Lm).toFixed(1);
+}
+function frame(){
+ if(running){
+  for(var s=0;s<8;s++)step();
+  var bad=!isFinite(rho[(H>>1)*W+(W>>1)])||!isFinite(cd);
+  if(bad){resetFlow()}
+ }
+ render();requestAnimationFrame(frame);
+}
+function paint(e,erase){
+ var r=cv.getBoundingClientRect(),gx=(e.clientX-r.left)/r.width*W,gy=(e.clientY-r.top)/r.height*H;
+ for(var y=Math.floor(gy-3);y<=gy+3;y++)for(var x=Math.floor(gx-3);x<=gx+3;x++){
+  if(x<2||x>=W-2||y<2||y>=H-2)continue;
+  if((x-gx)*(x-gx)+(y-gy)*(y-gy)>9)continue;
+  var k=y*W+x;
+  if(erase){if(solid[k]){solid[k]=0;for(var i=0;i<9;i++)f[i*N+k]=eq(i,1,u0,0)}}
+  else if(!solid[k]){solid[k]=1;for(var j=0;j<9;j++)f[j*N+k]=wt[j]}
+ }
+ measure();
+}
+var drawing=false,erase=false;
+cv.addEventListener("contextmenu",function(e){e.preventDefault()});
+cv.addEventListener("pointerdown",function(e){drawing=true;erase=e.shiftKey||e.button===2;cv.setPointerCapture(e.pointerId);paint(e,erase)});
+cv.addEventListener("pointermove",function(e){if(drawing)paint(e,erase);probe(e)});
+cv.addEventListener("pointerup",function(){drawing=false});
+["shape","size","aoa"].forEach(function(id){$(id).addEventListener("input",function(){params();build()})});
+["u0","nu","alt"].forEach(function(id){$(id).addEventListener("input",params)});
+$("pp").onclick=function(){running=!running;this.textContent=running?"Pause":"Resume"};
+$("rs").onclick=function(){resetFlow();fixCells()};
+$("vis").addEventListener("change",legend);
+params();resetFlow();build();frame();
+})();
+</script>
+</body>
+</html>
